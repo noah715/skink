@@ -1,0 +1,662 @@
+---
+title: "Data Analysis"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE)
+
+```
+
+
+## Setup
+
+```{r libraries, message = FALSE}
+library(plyr)
+library(tidyverse)
+library(parallel)
+library(furrr)
+library(cowplot)
+library(truncnorm)
+library(scales)
+library(lemon)
+library(ggpubr)
+library(patchwork)
+```
+
+
+```{r assign_multicore_computation}
+plan(multisession(workers = detectCores() - 1))
+```
+
+## Data import
+
+```{r}
+prefix = "./results/"
+
+dir_path = "management_Mar25-21-11-23"
+dir_path = "green_Mar25-20-38-37"
+dir_path = "habitat_Mar25-21-46-46"
+dir_path = "dispersal_Mar18-09-36-12"
+  
+dir_path = paste0(prefix, dir_path)
+
+
+if(!file.exists(paste0(dir_path, '/results.rds'))){
+  files = 
+  list.files(
+    pattern = 'scenario_*', 
+    path = dir_path, 
+    full.names = TRUE
+  )
+
+  myf = \(filename){
+  
+    df = 
+      readRDS(filename) |> 
+      slice_max(year) 
+    
+    return(df)
+  }
+  
+  results = 
+    files |>
+    future_map_dfr(myf)
+  
+  saveRDS(results, file = paste0(dir_path, '/results.rds'))
+} else{
+  results = readRDS(paste0(dir_path, '/results.rds'))
+}
+
+```
+
+## Parameter search
+
+```{r param-search-import}
+
+dir_path = "param_search_Mar25-11-20-46"
+  
+dir_path = paste0(prefix, dir_path)
+
+if(!file.exists(paste0(dir_path, '/results_max.rds'))){
+  plan(multisession(workers = detectCores() - 1))
+  
+  files = 
+  list.files(
+    pattern = '*scenario_*', 
+    path = dir_path, 
+    full.names = TRUE
+  )
+  
+  myf = \(filename){
+  
+    df = 
+      readRDS(filename) |> 
+      slice_max(year) 
+    
+    return(df)
+  }
+  
+  results_max = 
+    files |>
+    future_map_dfr(myf)
+  
+  saveRDS(results_max, file = paste0(dir_path, '/results_max.rds'))
+} else{
+  results_max = readRDS(paste0(dir_path, '/results_max.rds'))
+}
+```
+
+```{r param-search}
+
+abundances <- results_max |> filter(dispersal_mode == "targeted", conserve == TRUE) |> 
+  filter(allee) |> 
+  select(seed, muZ_reduction, muO_reduction, muT_reduction, muM_reduction, average_eggs, gamma, Macraes, Hyde, Pukerangi, Sutton, stage) |> 
+  mutate(Total = Macraes + Hyde + Pukerangi + Sutton) |>
+  group_by(seed, muZ_reduction, muO_reduction, muT_reduction, muM_reduction, average_eggs, gamma) |> 
+  dplyr::summarise(Total = sum(Total), .groups = "drop")
+
+abundances$Total[abundances$decreasing_5 == FALSE] <- 0
+
+params.dif <- abundances |> 
+  group_by(muZ_reduction, muO_reduction, muT_reduction, muM_reduction, average_eggs, gamma) |> 
+  dplyr::summarize(var = var(Total), Mean = mean(Total), MSE = mean((Total - 2500)^2), n = n(), .groups = "drop") |> 
+  arrange(MSE)
+
+params.dif
+
+```
+
+
+## Green status
+
+
+```{r green_status_plot}
+dir_path.2 = "green_conserve_Mar25-21-25-23"
+dir_path.2 = paste0(prefix, dir_path.2)
+
+if(!file.exists(paste0(dir_path.2, '/results.rds'))){
+  files =
+  list.files(
+    pattern = 'scenario_*',
+    path = dir_path.2,
+    full.names = TRUE
+  )
+
+  myf = \(filename){
+
+    df =
+      readRDS(filename) |>
+      slice_max(year)
+
+    return(df)
+  }
+
+  results.2 =
+    files |>
+    future_map_dfr(myf)
+
+  saveRDS(results.2, file = paste0(dir_path.2, '/results.rds'))
+} else{
+  results.2 = readRDS(paste0(dir_path.2, '/results.rds'))
+}
+
+green.df <- results |> 
+  filter(low_conservation, allee) |> 
+  group_by(conserve, years, manage) |> 
+  dplyr::summarize(mean = mean(green/4 * 100), sd = sd(green/4 * 100), .groups = "drop")
+
+green.df.2 <- results.2 |>
+  filter(allee) |>
+  group_by(conserve, years, manage, low_conservation) |>
+  dplyr::summarize(mean = mean(green/4 * 100), sd = sd(green/4 * 100)) |> 
+  mutate(years = years + 123)
+
+conserve.df <- data.frame(Time = rep(1:4, times = 3),
+                       Status = rep(c("Low conservation", "No conservation", "High conservation"), each = 4),
+                       Mean = NA,
+                       SD = NA)
+
+conserve.df$Mean[conserve.df$Status == "No conservation"] = c(100, arrange(filter(green.df, conserve == F, manage == F), years)$mean)
+conserve.df$SD[conserve.df$Status == "No conservation"] = c(0, arrange(filter(green.df, conserve == F, manage == F), years)$sd)
+
+
+
+conserve.df$Mean[conserve.df$Status == "Low conservation"] = c(100, filter(green.df, conserve == T, manage == T, years == 123)$mean, arrange(filter(green.df.2, conserve == T, manage == T, low_conservation == T), years)$mean)
+conserve.df$SD[conserve.df$Status == "Low conservation"] = c(0, filter(green.df, conserve == T, manage == T, years == 123)$sd, arrange(filter(green.df.2, conserve == T, manage == T, low_conservation == T), years)$sd)
+
+conserve.df$Mean[conserve.df$Status == "High conservation"] = c(100, filter(green.df, conserve == T, manage == T, years == 123)$mean, arrange(filter(green.df.2, conserve == T, manage == T, low_conservation == F), years)$mean)
+conserve.df$SD[conserve.df$Status == "High conservation"] = c(0, filter(green.df, conserve == T, manage == T, years == 123)$sd, arrange(filter(green.df.2, conserve == T, manage == T, low_conservation == F), years)$sd)
+
+conserve.df$Status <- factor(conserve.df$Status, levels = c("No conservation", "Low conservation", "High conservation"))
+
+conserve.df |> ggplot(aes(Time)) + 
+  geom_line(aes(y = Mean, color = Status), position = position_dodge(w = 0.3), linewidth = 1) +
+  geom_errorbar(aes(ymin = Mean - SD, ymax = Mean + SD, color = Status,
+                    width = 0.25),
+                position = position_dodge(w = 0.3), size = 1) +
+  labs(x = "Time", y = "Green Status", color = "") + 
+  theme_cowplot() + 
+  theme(strip.background =NULL) + 
+  scale_color_manual(values = c("#FF8C00", "#66CD00", "#458B00")) +
+  theme(aspect.ratio = 1) + 
+  scale_x_continuous(labels = c("1" = "Past\n(1900)", "2" = "Present\n(2023)", "3" = "Future\n(3 gen.)", "4" = "Future\n(100 years)")) 
+
+ggsave("figure/green.eps")
+ggsave("figure/green.png")
+ggsave("figure/green.jpeg")
+
+```
+
+```{r green-status}
+
+results_max |> filter(stage == "mature", year < 123, !allee) |>
+  ggplot() + 
+  geom_boxplot(aes(y = green, x = conserve)) +
+  ylab("Extinction year") + 
+  xlab("Conservation legacy") + 
+  ggtitle("No Allee")
+
+results_max |> filter(stage == "mature", year < 123, allee) |>
+  ggplot() + 
+  geom_boxplot(aes(y = year, x = conserve)) +
+  ylab("Extinction year") + 
+  xlab("Conservation legacy") + 
+  ggtitle("Allee")
+
+abundances <- results_max |> filter(!allee, dispersal_mode == "targeted") |> 
+  select(seed, conserve, Macraes, Hyde, Pukerangi, Sutton, stage) |> 
+  mutate(Total = Macraes + Hyde + Pukerangi + Sutton) |>
+  group_by(seed, conserve) |> 
+  summarise(Total = sum(Total), .groups = "drop")
+
+abundances |> ggplot() +
+  geom_boxplot(aes(x = conserve, y = Total))
+```
+
+
+## Dispersal
+
+```{r dispersal}
+extinctions = results |> filter(stage == "mature", allee)
+extinctions$year[extinctions$year > 100] <- 101
+extinctions$dispersal_mode[extinctions$dispersal_mode == "always_success"] <- "translocation"
+
+labels <- c(`TRUE` = "Allee effect", `FALSE` = "No Allee effect")
+
+# Plots ECDF of critical endangerment
+plot_extinctions =
+  extinctions |>
+  mutate(environmental_stochasticity = factor(environmental_stochasticity)) |>
+  dplyr::rename(`predation reduction (%)` = rho_reduction) |>
+  ggplot(aes(x = year, color = dispersal_mode)) +
+  stat_ecdf() +
+  facet_rep_wrap(
+    ~ `allee`, 
+    labeller = as_labeller(labels)
+  ) + 
+  labs(
+    x = 'Year',
+    y = 'Probability of CE',
+    color = 'Dispersal\nmode'
+  ) + 
+  theme_cowplot() + 
+  coord_cartesian(xlim = c(0, 100), expand = FALSE) +
+  theme(aspect.ratio = 1) + 
+  theme(strip.background =NULL) + 
+  ylim(0, 1.1)
+  
+plot_extinctions |> show()
+
+ggsave("figure/dispersal.eps")
+ggsave("figure/dispersal.png")
+ggsave("figure/dispersal.jpeg")
+
+# Plots box plot of critical endangerment
+box_extinctions =
+  extinctions |>
+  mutate(environmental_stochasticity = factor(environmental_stochasticity)) |>
+  dplyr::rename(`predation reduction (%)` = rho_reduction) |>
+  ggplot(aes(y = year, x = dispersal_mode)) + 
+  geom_boxplot() + 
+  labs(
+    x = "Dispersal method",
+    y = "Years to critical endangerment"
+    ) + 
+  theme_cowplot(font_size = 19, line_size = 1) + 
+  theme(strip.background =NULL) 
+  
+box_extinctions
+
+ggsave("figure/dispersal_box.eps")
+ggsave("figure/dispersal_box.png")
+ggsave("figure/dispersal_box.jpeg")
+```
+
+```{r}
+# Plots years to 25% Critical endangerment
+disp.25 <- results |> 
+  group_by(dispersal_mode, allee) |> 
+  summarise(year = ifelse(quantile(year, probs = 0.25) < 100, 
+                          quantile(year, probs = 0.25), NA)) 
+
+disp.25$dispersal_mode[disp.25$dispersal_mode == "always_success"] <- "translocation"
+disp.25$dispersal_mode <- as.factor(disp.25$dispersal_mode)
+
+disp.25 |> 
+  ggplot(aes(x = dispersal_mode, y = year, fill = allee)) +
+  geom_col(position = "dodge") + 
+  theme_cowplot() +
+  theme(strip.background =NULL) +
+  theme(aspect.ratio = 1) +
+  guides(lty = guide_legend(title = NULL), fill = guide_legend(title = NULL)) +
+  scale_fill_manual(values = c("#F8766D", "#619CFF"), labels = c(`TRUE` = "Allee effect", `FALSE` = "No Allee effect")) +
+  labs(x = "Dispersal method", y = "Years to 25% CE risk")
+
+ggsave("figure/dispersal_25.eps")
+ggsave("figure/dispersal_25.png")
+ggsave("figure/dispersal_25.jpeg")
+```
+
+
+## Fecundity comparison
+
+```{r fecundity-plot}
+# Plots a comparison of two fecundity curves
+source("Fecundity_logistic.R")
+
+df |> ggplot() + 
+  geom_line(aes(x = Abundance, y = Fecundity, color = Allee), size = 1.5) + 
+  theme_cowplot(font_size = 19, line_size = 1) + 
+  theme(strip.background =NULL) + 
+  theme(aspect.ratio = 1) + 
+  guides(lty = guide_legend(title = NULL), color = guide_legend(title = NULL)) + 
+  theme(legend.position = c(0.15, 0.2)) + 
+  scale_color_manual(values = c("#619CFF", "#F8766D")) + 
+  labs(x = "Patch abundance", y = "Fecundity probality (\u03A6)")
+  
+
+ggsave("figure/fecundity_curves.eps")
+ggsave("figure/fecundity_curves.png")
+ggsave("figure/fecundity_curves.jpeg")
+  
+```
+
+```{r}
+source("Fecundity_logistic.R")
+
+df |> filter(Allee == "Allee effects") |> 
+  ggplot() + 
+  geom_line(aes(x = Abundance, y = Fecundity, color = Allee), size = 1.5) + 
+  theme_cowplot(font_size = 19, line_size = 1) + 
+  theme(strip.background =NULL) + 
+  theme(aspect.ratio = 1) + 
+  guides(lty = guide_legend(title = NULL), color = "none") + 
+  theme(legend.position = c(0.15, 0.2)) + 
+  scale_color_manual(values = c("#F8766D")) + 
+  labs(x = "Abundance", y = "Fecundity probality") 
+
+  
+ggsave("figure/fecundity_curve.eps")
+ggsave("figure/fecundity_curve.png")
+ggsave("figure/fecundity_curve.jpeg")
+```
+
+
+## Habitat expansion
+
+```{r habitat}
+
+extinctions = results |> filter(stage == "mature", allee)
+extinctions$habitat_expansion <- as.factor(extinctions$habitat_expansion)
+
+labels <- c(`TRUE` = "Allee effect", `FALSE` = "No Allee effect")
+
+extinctions$allee <- factor(extinctions$allee, levels = c("TRUE", "FALSE"))
+
+# Plots ECDF of for habitat expansion
+plot_extinctions =
+  extinctions |>
+  mutate(environmental_stochasticity = factor(environmental_stochasticity)) |>
+  dplyr::rename(`predation reduction (%)` = rho_reduction) |>
+  ggplot(aes(x = year, color = habitat_expansion)) +
+  stat_ecdf(size = 1) +
+  labs(
+    x = 'Year',
+    y = 'Probability of critical\nendangerment',
+    color = 'Habitat\nexpansion (%)'
+  ) + 
+  theme_cowplot() + 
+  coord_cartesian(xlim = c(0, 100), expand = FALSE) +
+  theme(aspect.ratio = 1) + 
+  theme(strip.background =NULL) + 
+  ylim(0, 1.1)
+
+
+plot_extinctions |> show()
+
+ggsave("figure/habexp.eps")
+ggsave("figure/habexp.png")
+ggsave("figure/habexp.jpeg")
+
+extinctions = results |> filter(stage == "mature", habitat_expansion == 0)
+extinctions$allee <- factor(extinctions$allee, levels = c("TRUE", "FALSE"))
+
+plot_fec =
+  extinctions |>
+  mutate(environmental_stochasticity = factor(environmental_stochasticity)) |>
+  dplyr::rename(`predation reduction (%)` = rho_reduction) |>
+  ggplot(aes(x = year, color = allee)) +
+  stat_ecdf(size = 1) +
+  labs(
+    x = 'Year',
+    y = 'Probability of critical\nendangerment',
+    color = 'Fecundity\ntype'
+  ) + 
+  theme_cowplot(font_size = 19, line_size = 1) + 
+  theme(aspect.ratio = 1) + 
+  guides(color = "none") + 
+  coord_cartesian(xlim = c(0, 100), ylim = c(0, 1), expand = FALSE) +
+  scale_color_manual(values = c("#F8766D", "#619CFF"), labels = c(`TRUE` = "Allee effect", `FALSE` = "No Allee effect"))
+  
+  
+plot_fec |> show()
+
+ggsave("figure/fec_compare.eps")
+ggsave("figure/fec_compare.png")
+ggsave("figure/fec_compare.jpeg")
+
+
+extinctions = results |> filter(stage == "mature", allee)
+extinctions$year[extinctions$year > 100] <- 101
+extinctions$habitat_expansion <- as.factor(extinctions$habitat_expansion)
+
+# Plots a box plot for hab expansion
+box_extinctions =
+  extinctions |>
+  mutate(environmental_stochasticity = factor(environmental_stochasticity)) |>
+  dplyr::rename(`predation reduction (%)` = rho_reduction) |>
+  ggplot(aes(y = year, x = habitat_expansion)) + 
+  geom_boxplot() + 
+  labs(
+    x = "Habitat expansion (%)",
+    y = "Years to critical endangerment"
+    ) + 
+  theme(aspect.ratio = 1) + 
+  theme_cowplot() + 
+  theme(strip.background =NULL)
+  
+box_extinctions
+
+ggsave("figure/habitat_box.eps")
+ggsave("figure/habitat_box.png")
+ggsave("figure/habitat_box.jpeg")
+
+prob.36 <- data.frame(habitat_expansion = seq(0, 100, 10), prob.36 = NA, prob.100 = NA)
+
+prob.36$prob.36 = results |>
+  filter(stage == "mature", allee) |>
+  group_by(habitat_expansion) |> 
+  summarize(p = mean(year <= 36)) |> 
+  pull(p)
+
+prob.36$prob.100 = results |>
+  filter(stage == "mature", allee) |>
+  group_by(habitat_expansion) |> 
+  summarize(p = mean(year <= 100)) |> 
+  pull(p)
+
+prob.df <- prob.36 |> pivot_longer(c(prob.36, prob.100), names_to = "Years", values_to = "prob")
+prob.df$Years = factor(prob.df$Years, levels = c("prob.36", "prob.100"))
+  
+prob.df
+
+prob.36.plot = prob.df |> 
+  ggplot(aes(x = habitat_expansion, y = prob, col = Years)) + 
+  geom_line(size = 1) + 
+  labs(
+    x = 'Habitat expansion (%)',
+    y = 'Probability of critical\nendangerment',
+  ) + 
+  scale_color_manual(values = c("#F8766D", "#619CFF"), labels = c(`prob.36` = "36", `prob.100` = "100")) + 
+  theme_cowplot() +
+  theme(aspect.ratio = 1, legend.position = c(0.75, 0.8)) 
+
+prob.36.plot
+```
+
+```{r hab-fig,fig.width=12, fig.height=4}
+cowplot::plot_grid(plot_extinctions, prob.36.plot, labels = c("A", "B"), align = T)
+
+ggsave("figure/habitat.eps")
+ggsave("figure/habitat.png")
+ggsave("figure/habitat.jpeg")
+```
+
+
+
+```{r}
+results |> group_by(habitat_expansion, allee) |> 
+  filter(allee) |> 
+  dplyr::summarise(year = ifelse(quantile(year, probs = 0.25) < 100, 
+                          quantile(year, probs = 0.25), NA)) |> 
+  ggplot(aes(x = habitat_expansion, y = year, col = allee)) +
+  geom_point(size = 2) + 
+  geom_smooth(method = "lm", show.legend = F, se = F) +
+  theme_cowplot(font_size = 19, line_size = 1) + 
+  theme(strip.background =NULL) + 
+  theme(aspect.ratio = 1) + 
+  guides(lty = guide_legend(title = NULL), color = "none") + 
+  scale_color_discrete() + 
+  scale_color_manual(values = c("#F8766D", "#619CFF"), labels = c(`TRUE` = "Allee effect", `FALSE` = "No Allee effect")) + 
+  stat_regline_equation(label.y = 50, label.x = 60, aes(label = ..eq.label..), color = "black", size = 5) +
+  stat_regline_equation(label.y = 45, label.x = 75, aes(label = ..rr.label..), color = "black", size = 5) +
+  labs(x = "Habitat expansion (%)", y = "Years to 25% CE risk")
+
+ggsave("figure/habitat_25.eps")
+ggsave("figure/habitat_25.png")
+ggsave("figure/habitat_25.jpeg")
+```
+
+
+
+## Management
+
+```{r management-setup}
+rho.seq <- seq(0, 20, by = 10)
+captive.seq <- seq(0, 120, by = 40)
+
+df <- expand_grid(rho_reduction = rho.seq,
+                  captive_breeding = captive.seq,
+                  Status = c('Endangered', "Critically endangered", "Vulnerable"),
+                  year = 1:100, 
+                  percent = NA)
+
+results.filter <- results |> filter(allee == TRUE, stage == "mature") |> 
+  dplyr::select(rho_reduction, captive_breeding, Status, year, seed)
+
+for (r in rho.seq){
+  results.r <- results.filter |> filter(rho_reduction == r)
+  for (c in captive.seq){
+    results.c <- results.r |> filter(captive_breeding == c)
+    for (s in c("Critically endangered", "Vulnerable", "Endangered")){
+      results.s <- results.c |> filter(Status == s)
+      for (y in 1:100){
+        if (s != "Endangered"){
+          df$percent[df$rho_reduction == r & df$captive_breeding == c & df$year == y & df$Status == s] = sum(results.s$year <= y) / 250
+        } else{
+          df$percent[df$rho_reduction == r & df$captive_breeding == c & df$year == y & df$Status == s] = 
+            1 - df$percent[df$rho_reduction == r & df$captive_breeding == c & df$year == y & df$Status == "Critically endangered"] -
+            df$percent[df$rho_reduction == r & df$captive_breeding == c & df$year == y & df$Status == "Vulnerable"]
+        }
+      }
+    }
+  }
+}
+
+most_common <- function(df){
+  return(df[which(df$percent == max(df$percent)),])
+}
+
+most_common(df[df$rho_reduction == 0 & df$captive_breeding == 0 & df$year == 1,])
+
+most.common.df <- plyr::ddply(df, c("rho_reduction", "captive_breeding", "year"), most_common)
+most.common.df$Status <- factor(most.common.df$Status, levels = c("Critically endangered", "Endangered", "Vulnerable"))
+
+most.common.df$rho_reduction <- as.factor(most.common.df$rho_reduction)
+most.common.df$captive_breeding <- as.factor(most.common.df$captive_breeding)
+
+```
+
+
+```{r management-status}
+rho.labs <- paste(rho.seq, "%", sep = "")
+names(rho.labs) = rho.seq
+captive.labs <- paste(captive.seq, "indivudals")
+names(captive.labs) <- captive.seq
+status.labs <- c(`Critically endangered` = "Critically\nendangered", 
+              `Endangered` = "Endangered",
+              `Vulnerable` = "Vulnerable")
+
+df$rho_reduction <- as.factor(df$rho_reduction)
+df$captive_breeding <- as.factor(df$captive_breeding)
+
+df |> ggplot(aes(x = year, y = percent, color = captive_breeding))  + 
+    facet_rep_grid(cols = vars(Status),
+             rows = vars(rho_reduction),
+             labeller = labeller(Status = status.labs,
+                                 rho_reduction = rho.labs)) + 
+  geom_line() + 
+  xlab("Year") + 
+  ylab("Probability") +
+  theme_cowplot() +
+  coord_cartesian(xlim = c(0, 100), expand = FALSE) +
+  theme(strip.background = NULL) +
+  scale_color_discrete(labels = captive.labs) +
+  labs(color = "Individuals\nadded") +
+  scale_y_continuous(breaks = c(0, 0.5, 1))
+
+filename = "management_status"
+ggsave(paste("figure/", filename, ".eps", sep = '', collapse = ''))
+ggsave(paste("figure/", filename, ".png", sep = '', collapse = ""))
+ggsave(paste("figure/", filename, ".jpeg", sep = '', collapse = ""))
+```
+
+```{r most-common}
+rho.labs <- paste(rho.seq, "%", sep = "")
+names(rho.labs) = rho.seq
+captive.labs <- paste(captive.seq, "indivudals")
+names(captive.labs) <- captive.seq
+y.labs <- c(`Critically endangered` = "Critically\nendangered", 
+              `Endangered` = "Endangered",
+              `Vulnerable` = "Vulnerable")
+
+jitter = 0.15
+
+plot.df <- most.common.df |>
+  mutate(y.status = as.numeric(Status),
+         y.jitter = seq(-jitter, jitter, length = n_distinct(captive_breeding))[captive_breeding])
+
+
+plot.df |> 
+  # filter(rho_reduction == 20) |> 
+  ggplot(aes(x = year, y = y.status + y.jitter, color = captive_breeding)) + 
+  geom_line(size = 1) + 
+  facet_rep_grid(rows = vars(rho_reduction),
+                 labeller = labeller(rho_reduction = rho.labs[1:3])) +
+  scale_y_continuous(breaks = 1:3,
+                     labels = y.labs) + 
+  labs(x = "Year", y = "Most likely threatened category") + 
+  theme_cowplot(font_size = 15) + 
+  coord_cartesian(xlim = c(0, 100), 
+                  ylim = c(min(plot.df$y.status + 2*plot.df$y.jitter), max(plot.df$y.status + 2*plot.df$y.jitter)),
+                  expand = FALSE) +
+  theme(strip.background = NULL) +
+  labs(color = "Individuals\nadded")
+
+filename = "management_most_likely_4"
+ggsave(paste("figure/", filename, ".eps", sep = '', collapse = ''))
+ggsave(paste("figure/", filename, ".png", sep = '', collapse = ""))
+ggsave(paste("figure/", filename, ".jpeg", sep = '', collapse = ""))
+```
+
+```{r}
+df |> filter(rho_reduction == 5, captive_breeding == 0) |> 
+  ggplot(aes(x = year, y = percent, color = Status)) + 
+  geom_line(size = 1) + 
+  xlab("Year") + 
+  ylab("Probability") +
+  theme_cowplot(font_size = 19, line_size = 1) + 
+  coord_cartesian(xlim = c(0, 100), y = c(0, 1.01), expand = FALSE) +
+  theme(strip.background = NULL) +
+  scale_color_discrete(labels = status.labs) +
+  labs(color = "IUCN Status") +
+  scale_y_continuous(breaks = c(0, 0.5, 1))
+  
+
+filename = "management_status_specific"
+ggsave(paste("figure/", filename, ".eps", sep = '', collapse = ''))
+ggsave(paste("figure/", filename, ".png", sep = '', collapse = ""))
+ggsave(paste("figure/", filename, ".jpeg", sep = '', collapse = ""))
+```
