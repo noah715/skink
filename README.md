@@ -9,3 +9,6 @@
 - `Fecundity_logistic.R` - This contains the function for fecundity as well as all the code to fit it to a given mortality value.
 - `Patch_risk.R` - This contains the code to create logistic regression models for each patch comparing extinction risk to patch abundance.  Should be run with the results from a `patch_persistence` model from the simulation script.
 - `Data_analysis.Rmd` - This contains all of the code to create the figures as shown in the manuscript.
+
+
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.10944749.svg)](https://doi.org/10.5281/zenodo.10944749)
